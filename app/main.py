@@ -1,12 +1,14 @@
 from fastapi import FastAPI
+from app.config.settings import settings
 
 app = FastAPI()
 
 @app.get("/")
 async def root():
     return {
-        "message": "Hello, ChatBot API!"
-    }
+    "app": settings.app_name,
+    "version": settings.app_version,
+}
 
 @app.get("/health")
 async def health():

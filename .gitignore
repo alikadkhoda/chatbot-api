@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Other files or directories
+.env
+.pytest_cache/
+*.pyc
