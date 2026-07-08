@@ -28,6 +28,7 @@ async def version():
 
 @app.get("/db-test")
 async def db_test(session: AsyncSession = Depends(get_session)):
-    result = await session.execute(text("SELECT current_database();"))
+    ping = await session.execute(text("SELECT 1;"))
+    db_name = await session.execute(text("SELECT current_database();"))
 
-    return {"result": result.scalar()}
+    return {"ping": ping.scalar(), "database": db_name.scalar()}
