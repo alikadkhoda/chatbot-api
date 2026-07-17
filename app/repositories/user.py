@@ -22,3 +22,9 @@ class UserRepository(BaseRepository):
         # return result.scalar_one_or_none()
 
         return await self.session.get(User, user_id)
+
+    async def create(self, user: User) -> User:
+        self.session.add(user)
+        await self.session.flush()
+
+        return user
