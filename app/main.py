@@ -2,8 +2,10 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.users import router as users_router
 from app.core.config import settings
 from app.database.session import get_session
+from app.exceptions.handlers import register_exception_handlers
 
 app = FastAPI()
 
@@ -32,3 +34,7 @@ async def db_test(session: AsyncSession = Depends(get_session)):
     db_name = await session.execute(text("SELECT current_database();"))
 
     return {"ping": ping.scalar(), "database": db_name.scalar()}
+
+
+register_exception_handlers(app)
+app.include_router(users_router)
