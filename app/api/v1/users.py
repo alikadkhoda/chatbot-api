@@ -11,5 +11,5 @@ router = APIRouter(prefix="/users", tags=["Users"])
 async def register(
     data: UserCreate,
     service: UserService = Depends(get_user_service),
-):
+) -> UserRead:
     return await service.create_user(data)
