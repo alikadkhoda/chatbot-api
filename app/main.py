@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.auth import router as auth_router
 from app.api.v1.users import router as users_router
 from app.core.config import settings
 from app.database.session import get_session
@@ -38,3 +39,4 @@ async def db_test(session: AsyncSession = Depends(get_session)):
 
 register_exception_handlers(app)
 app.include_router(users_router)
+app.include_router(auth_router)
