@@ -1,8 +1,8 @@
+from app.core.jwt import create_access_token
 from app.core.security import verify_password
 from app.exceptions.auth import InvalidCredentialsError
 from app.repositories.user import UserRepository
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.services.jwt import create_access_token
 
 
 class AuthService:

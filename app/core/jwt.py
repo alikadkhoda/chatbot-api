@@ -2,8 +2,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
+from jwt import ExpiredSignatureError
+from jwt import InvalidTokenError as PyJWTInvalidTokenError
 
 from app.core.config import settings
+from app.exceptions.auth import InvalidTokenError
 
 
 def create_access_token(subject: str) -> str:
@@ -26,8 +29,11 @@ def create_access_token(subject: str) -> str:
 
 
 def decode_token(token: str) -> dict[str, Any]:
-    return jwt.decode(
-        jwt=token,
-        key=settings.secret_key,
-        algorithms=[settings.algorithm],
-    )
+    try:
+        return jwt.decode(
+            jwt=token,
+            key=settings.secret_key,
+            algorithms=[settings.algorithm],
+        )
+    except (ExpiredSignatureError, PyJWTInvalidTokenError) as exc:
+        raise InvalidTokenError() from exc
