@@ -20,8 +20,8 @@ async def get_current_user(
 
     subject = payload.get("sub")
 
-    if subject is None:
-        raise InvalidTokenError
+    if not isinstance(subject, str):
+        raise InvalidTokenError()
 
     try:
         user_id = UUID(subject)
