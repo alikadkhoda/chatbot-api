@@ -20,3 +20,9 @@ class UserRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserUpdate(BaseModel):
+    username: str | None = None
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
