@@ -2,9 +2,11 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_session
+from app.repositories.chat import ChatRepository
 from app.repositories.refresh_token import RefreshTokenRepository
 from app.repositories.user import UserRepository
 from app.services.auth import AuthService
+from app.services.chat import ChatService
 from app.services.user import UserService
 
 
@@ -24,3 +26,9 @@ def get_auth_service(session: AsyncSession = Depends(get_session)) -> AuthServic
         user_repository=user_repository,
         refresh_token_repository=refresh_token_repository,
     )
+
+
+def get_chat_service(session: AsyncSession = Depends(get_session)) -> ChatService:
+    repository = ChatRepository(session=session)
+
+    return ChatService(repository=repository)
