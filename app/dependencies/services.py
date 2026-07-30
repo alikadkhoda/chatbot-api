@@ -3,10 +3,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_session
 from app.repositories.chat import ChatRepository
+from app.repositories.message import MessageRepository
 from app.repositories.refresh_token import RefreshTokenRepository
 from app.repositories.user import UserRepository
 from app.services.auth import AuthService
 from app.services.chat import ChatService
+from app.services.message import MessageService
 from app.services.user import UserService
 
 
@@ -32,3 +34,12 @@ def get_chat_service(session: AsyncSession = Depends(get_session)) -> ChatServic
     repository = ChatRepository(session=session)
 
     return ChatService(repository=repository)
+
+
+def get_message_service(session: AsyncSession = Depends(get_session)) -> MessageService:
+    message_repository = MessageRepository(session=session)
+    chat_repository = ChatRepository(session=session)
+
+    return MessageService(
+        message_repository=message_repository, chat_repository=chat_repository
+    )
