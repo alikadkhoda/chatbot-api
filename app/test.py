@@ -35,19 +35,37 @@
 # except Exception as exc:
 #     print(type(exc).__name__)
 
-from datetime import datetime, timedelta, timezone
+# from datetime import datetime, timedelta, timezone
 
-import jwt
+# import jwt
 
-from app.core.config import settings
+# from app.core.config import settings
 
-token = jwt.encode(
-    {
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
-    },
-    settings.secret_key,
-    algorithm=settings.algorithm,
+# token = jwt.encode(
+#     {
+#         "iat": datetime.now(timezone.utc),
+#         "exp": datetime.now(timezone.utc) + timedelta(minutes=30),
+#     },
+#     settings.secret_key,
+#     algorithm=settings.algorithm,
+# )
+
+# print(token)
+
+
+from app.schemas.llm import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMRequest,
 )
 
-print(token)
+request = LLMRequest(
+    messages=[
+        LLMMessage(
+            role=LLMMessageRole.USER,
+            content="Hello",
+        )
+    ]
+)
+
+print(request)
