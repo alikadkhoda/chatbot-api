@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from app.exceptions.chat import ChatNotFoundError
-from app.exceptions.message import MessageNotFoundError
+from app.exceptions.message import MessageImmutableError, MessageNotFoundError
 from app.models.message import Message, MessageRole
 from app.repositories.chat import ChatRepository
 from app.repositories.message import MessageRepository
@@ -63,6 +63,9 @@ class MessageService:
         if message is None:
             raise MessageNotFoundError()
 
+        if message.role is not MessageRole.USER:
+            raise MessageImmutableError()
+
         if data.content is not None:
             message.content = data.content
 
@@ -80,6 +83,9 @@ class MessageService:
 
         if message is None:
             raise MessageNotFoundError()
+
+        if message.role is not MessageRole.USER:
+            raise MessageImmutableError()
 
         await self.message_repository.delete(message=message)
         await self.message_repository.commit()
