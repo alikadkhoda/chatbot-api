@@ -53,19 +53,45 @@
 # print(token)
 
 
-from app.schemas.llm import (
-    LLMMessage,
-    LLMMessageRole,
-    LLMRequest,
-)
+# from app.schemas.llm import (
+#     LLMMessage,
+#     LLMMessageRole,
+#     LLMRequest,
+# )
 
-request = LLMRequest(
-    messages=[
-        LLMMessage(
-            role=LLMMessageRole.USER,
-            content="Hello",
-        )
-    ]
-)
+# request = LLMRequest(
+#     messages=[
+#         LLMMessage(
+#             role=LLMMessageRole.USER,
+#             content="Hello",
+#         )
+#     ]
+# )
 
-print(request)
+# print(request)
+
+
+import asyncio
+
+from app.tools.bank_card_validator import BankCardValidatorTool
+from app.tools.registry import ToolRegistry
+
+
+async def main() -> None:
+    tool = BankCardValidatorTool()
+
+    result = await tool.execute(
+        {
+            "card_number": "6037991234567890",
+        }
+    )
+
+    assert result.content == "The bank card number is invalid."
+
+    registry = ToolRegistry([BankCardValidatorTool()])
+
+    tool = registry.get("validate_bank_card")
+    assert registry.get("validate_bank_card") is not None
+
+
+asyncio.run(main())
