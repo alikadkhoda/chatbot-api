@@ -71,27 +71,49 @@
 # print(request)
 
 
+# import asyncio
+
+# from app.tools.bank_card_validator import BankCardValidatorTool
+# from app.tools.registry import ToolRegistry
+
+
+# async def main() -> None:
+#     tool = BankCardValidatorTool()
+
+#     result = await tool.execute(
+#         {
+#             "card_number": "6037991234567890",
+#         }
+#     )
+
+#     assert result.content == "The bank card number is invalid."
+
+#     registry = ToolRegistry([BankCardValidatorTool()])
+
+#     tool = registry.get("validate_bank_card")
+#     assert registry.get("validate_bank_card") is not None
+
+
+# asyncio.run(main())
+
 import asyncio
 
-from app.tools.bank_card_validator import BankCardValidatorTool
-from app.tools.registry import ToolRegistry
+from app.providers.gemini import GeminiProvider
+from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest
 
 
 async def main() -> None:
-    tool = BankCardValidatorTool()
+    provider = GeminiProvider(api_key="...", default_model="gemini-2.5-flash")
 
-    result = await tool.execute(
-        {
-            "card_number": "6037991234567890",
-        }
+    response = await provider.generate(
+        LLMRequest(
+            messages=[
+                LLMMessage(role=LLMMessageRole.USER, content="سلام. خودت را معرفی کن.")
+            ]
+        )
     )
 
-    assert result.content == "The bank card number is invalid."
-
-    registry = ToolRegistry([BankCardValidatorTool()])
-
-    tool = registry.get("validate_bank_card")
-    assert registry.get("validate_bank_card") is not None
+    print(response.content)
 
 
 asyncio.run(main())
