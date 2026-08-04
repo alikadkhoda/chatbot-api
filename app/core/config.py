@@ -1,12 +1,7 @@
-from enum import StrEnum
-
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-class AIProvider(StrEnum):
-    GEMINI = "gemini"
-    OLLAMA = "ollama"
+from app.schemas.llm_provider import AIProvider
 
 
 class AISetting(BaseModel):
