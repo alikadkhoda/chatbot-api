@@ -96,19 +96,47 @@
 
 # asyncio.run(main())
 
+# import asyncio
+
+# from app.providers.gemini import GeminiProvider
+# from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest
+
+
+# async def main() -> None:
+#     provider = GeminiProvider(api_key="...", default_model="gemini-2.5-flash")
+
+#     response = await provider.generate(
+#         LLMRequest(
+#             messages=[
+#                 LLMMessage(role=LLMMessageRole.USER,
+#                            content="سلام. خودت را معرفی کن.")
+#             ]
+#         )
+#     )
+
+#     print(response.content)
+
+
+# asyncio.run(main())
 import asyncio
 
-from app.providers.gemini import GeminiProvider
+from app.providers.ollama import OllamaProvider
 from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest
 
 
 async def main() -> None:
-    provider = GeminiProvider(api_key="...", default_model="gemini-2.5-flash")
+    provider = OllamaProvider(
+        host="http://localhost:11434",
+        default_model="qwen3",
+    )
 
     response = await provider.generate(
         LLMRequest(
             messages=[
-                LLMMessage(role=LLMMessageRole.USER, content="سلام. خودت را معرفی کن.")
+                LLMMessage(
+                    role=LLMMessageRole.USER,
+                    content="سلام",
+                )
             ]
         )
     )

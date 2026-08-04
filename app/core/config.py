@@ -1,10 +1,19 @@
+from enum import StrEnum
+
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class AIProvider(StrEnum):
+    GEMINI = "gemini"
+    OLLAMA = "ollama"
+
+
 class AISetting(BaseModel):
+    provider: AIProvider = AIProvider.OLLAMA
     gemini_api_key: str
-    default_model: str = "gemini-2.5-flash"
+    default_model: str = "qwen3"
+    ollama_host: str = "http://localhost:11434"
 
 
 class Settings(BaseSettings):
@@ -22,7 +31,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     ai: AISetting
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=".env", case_sensitive=False, env_nested_delimiter="__"
+    )
 
 
 settings = Settings()

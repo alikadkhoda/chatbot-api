@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.139.0",
     "google-genai>=2.16.0",
+    "ollama>=0.6.2",
     "pwdlib[argon2]>=0.3.0",
     "pydantic-settings>=2.14.2",
     "pydantic[email]>=2.13.4",
