@@ -5,7 +5,7 @@ from app.exceptions.message import MessageImmutableError, MessageNotFoundError
 from app.models.message import Message, MessageRole
 from app.repositories.chat import ChatRepository
 from app.repositories.message import MessageRepository
-from app.schemas.llm import LLMMessage
+from app.schemas.llm import LLMMessage, LLMMessageRole
 from app.schemas.message import MessageCreate, MessageRead, MessageUpdate
 
 
@@ -122,6 +122,12 @@ class MessageService:
         await self.message_repository.delete(message=message)
         await self.message_repository.commit()
 
-    async def get_llm_messages(
-        self, chat_id: UUID, user_id: UUID
-    ) -> list[LLMMessage]: ...
+    async def get_llm_messages(self, chat_id: UUID, user_id: UUID) -> list[LLMMessage]:
+        messages = await self.message_repository.get_all_for_chat(
+            chat_id=chat_id, user_id=user_id
+        )
+
+        return [
+            LLMMessage(role=LLMMessageRole(message.role.value), content=message.content)
+            for message in messages
+        ]
