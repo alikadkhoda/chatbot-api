@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from uuid import UUID
 
 from app.providers.llm import LLMProvider
@@ -38,3 +39,27 @@ class ConversationOrchestratorService:
         )
 
         return assistant
+
+    async def stream_message(
+        self, chat_id: UUID, user_id: UUID, content: str
+    ) -> AsyncIterator[str]:
+        await self.chat_service.get_chat(chat_id=chat_id, user_id=user_id)
+
+        await self.message_service.create_user_message(
+            chat_id=chat_id, user_id=user_id, data=MessageCreate(content=content)
+        )
+
+        messages = await self.message_service.get_llm_messages(
+            chat_id=chat_id, user_id=user_id
+        )
+
+        buffer: list[str] = []
+
+        async for token in self.provider.generate_stream(LLMRequest(messages=messages)):
+            buffer.append(token)
+
+            yield f"data: {token}\n\n"
+
+        await self.message_service.create_assistant_message(
+            chat_id=chat_id, user_id=user_id, content="".join(buffer)
+        )

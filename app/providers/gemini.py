@@ -1,3 +1,5 @@
+from collections.abc import AsyncGenerator
+
 from google import genai
 
 from app.exceptions.provider import LLMProviderError
@@ -24,3 +26,18 @@ class GeminiProvider(LLMProvider):
             raise LLMProviderError()
 
         return LLMResponse(content=response.text)
+
+    async def generate_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
+        prompt = build_prompt(request.messages)
+
+        try:
+            stream = await self._client.aio.models.generate_content_stream(
+                model=request.model or self._default_model, contents=prompt
+            )
+
+            async for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+
+        except Exception as ex:
+            raise LLMProviderError() from ex
