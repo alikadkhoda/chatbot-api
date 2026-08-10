@@ -13,6 +13,8 @@ from app.services.chat import ChatService
 from app.services.conversation import ConversationOrchestratorService
 from app.services.message import MessageService
 from app.services.user import UserService
+from app.tools.bank_card_validator import BankCardValidatorTool
+from app.tools.registry import ToolRegistry
 
 
 def get_user_service(
@@ -48,12 +50,20 @@ def get_message_service(session: AsyncSession = Depends(get_session)) -> Message
     )
 
 
+def get_tool_registry() -> ToolRegistry:
+    return ToolRegistry([BankCardValidatorTool()])
+
+
 def get_conversation_service(
     chat_service: ChatService = Depends(get_chat_service),
     message_service: MessageService = Depends(get_message_service),
+    tool_registry: ToolRegistry = Depends(get_tool_registry),
 ) -> ConversationOrchestratorService:
     provider = LLMProviderFactory.create(settings=settings.ai)
 
     return ConversationOrchestratorService(
-        chat_service=chat_service, message_service=message_service, provider=provider
+        chat_service=chat_service,
+        message_service=message_service,
+        provider=provider,
+        tool_registry=tool_registry,
     )

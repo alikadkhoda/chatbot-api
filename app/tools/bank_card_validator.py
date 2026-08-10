@@ -11,10 +11,14 @@ class BankCardValidatorTool:
             name="validate_bank_card",
             description=" Validate an bank card number using the Luhn algorithm",
             parameters={
-                "card_number": {
-                    "type": "string",
-                    "description": "A 16-digit Iranian bank card number",
-                }
+                "type": "object",
+                "properties": {
+                    "card_number": {
+                        "type": "string",
+                        "description": "A 16-digit Iranian bank card number",
+                    },
+                },
+                "required": ["card_number"],
             },
         )
 

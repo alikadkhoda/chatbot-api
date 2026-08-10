@@ -12,6 +12,7 @@ class ToolDefinition(BaseModel):
 
 
 class ToolCall(BaseModel):
+    id: str | None = None
     tool_name: str = Field(min_length=1)
     arguments: dict[str, Any]
 

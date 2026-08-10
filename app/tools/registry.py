@@ -1,3 +1,4 @@
+from app.schemas.tool import ToolDefinition
 from app.tools.base import Tool
 
 
@@ -7,3 +8,6 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
+
+    def definitions(self) -> list[ToolDefinition]:
+        return [tool.definition for tool in self._tools.values()]

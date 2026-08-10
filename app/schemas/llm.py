@@ -2,22 +2,29 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.tool import ToolCall, ToolDefinition
+
 
 class LLMMessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    TOOL = "tool"
 
 
 class LLMMessage(BaseModel):
     role: LLMMessageRole
-    content: str = Field(min_length=1)
+    content: str
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_name: str | None = None
+    tool_call_id: str | None = None
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
 class LLMResponse(BaseModel):
-    content: str = Field(min_length=1)
+    content: str | None = Field(min_length=1)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -25,5 +32,6 @@ class LLMResponse(BaseModel):
 class LLMRequest(BaseModel):
     messages: list[LLMMessage] = Field(min_length=1)
     model: str | None = None
+    tools: list[ToolDefinition] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
