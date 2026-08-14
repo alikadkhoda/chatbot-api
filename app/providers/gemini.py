@@ -43,7 +43,7 @@ class GeminiProvider(LLMProvider):
         if content is None and not tool_calls:
             raise LLMProviderError()
 
-        return LLMResponse(content=response.text)
+        return LLMResponse(content=response.text, tool_calls=tool_calls)
 
     async def generate_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
         prompt = build_prompt(request.messages)
@@ -121,7 +121,7 @@ class GeminiProvider(LLMProvider):
         kwargs: dict[str, Any] = {}
 
         if system_instruction:
-            kwargs["system_istruction"] = system_instruction
+            kwargs["system_instruction"] = system_instruction
         if tools:
             kwargs["tools"] = [
                 types.Tool(

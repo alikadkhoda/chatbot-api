@@ -52,6 +52,30 @@ class ChatService:
 
         return ChatRead.model_validate(chat)
 
+    async def get_summary(self, chat_id: UUID, user_id: UUID) -> str | None:
+        chat = await self.repository.get_by_id_for_user(
+            chat_id=chat_id, user_id=user_id
+        )
+
+        if chat is None:
+            raise ChatNotFoundError()
+        return chat.summary
+
+    async def update_summary(self, chat_id: UUID, user_id: UUID, summary: str) -> str:
+        chat = await self.repository.get_by_id_for_user(
+            chat_id=chat_id, user_id=user_id
+        )
+
+        if chat is None:
+            raise ChatNotFoundError()
+
+        chat.summary = summary
+
+        await self.repository.commit()
+        await self.repository.refresh(chat)
+
+        return summary
+
     async def delete_chat(self, chat_id: UUID, user_id: UUID) -> None:
         chat = await self.repository.get_by_id_for_user(
             chat_id=chat_id, user_id=user_id

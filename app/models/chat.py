@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
@@ -16,3 +16,5 @@ class Chat(BaseModel):
     )
 
     title: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
