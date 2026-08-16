@@ -1,7 +1,10 @@
+import asyncio
+import json
+import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from app.exceptions.provider import LLMProviderError
+from app.exceptions.provider import LLMProviderError, LLMProviderTransientError
 from app.exceptions.tool import (
     ToolExecutionError,
     ToolLoopLimitError,
@@ -27,9 +30,12 @@ from app.services.conversation_summary import (
 from app.services.message import MessageService
 from app.tools.registry import ToolRegistry
 
+logger = logging.getLogger(__name__)
+
 
 class ConversationOrchestratorService:
     MAX_TOOL_ITERATIONS = 3
+    MAX_PROVIDER_RETRIES = 2
 
     def __init__(
         self,
@@ -133,14 +139,41 @@ class ConversationOrchestratorService:
         tool = self.tool_registry.get(tool_call.tool_name)
 
         if tool is None:
+            logger.error("Tool not found", extra={"tool_name": tool_call.tool_name})
             raise ToolNotFoundError()
 
         try:
             result = await tool.execute(tool_call.arguments)
         except Exception as ex:
+            logger.exception(
+                "Tool execution failed", extra={"tool_name": tool_call.tool_name}
+            )
             raise ToolExecutionError() from ex
 
         return result.content
+
+    async def _generate_with_retry(self, request: LLMRequest) -> LLMResponse:
+        for attempt in range(self.MAX_PROVIDER_RETRIES + 1):
+            try:
+                return await self.provider.generate(request=request)
+            except LLMProviderTransientError:
+                logger.warning(
+                    "Transient LLM provider error",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_attempts": self.MAX_PROVIDER_RETRIES + 1,
+                    },
+                )
+
+                if attempt >= self.MAX_PROVIDER_RETRIES:
+                    raise
+
+                await asyncio.sleep(2**attempt)
+            except LLMProviderError:
+                logger.exception("LLM provider error")
+                raise
+
+        raise LLMProviderError(message="LLM provider retry loop ended unexpectedly.")
 
     async def _generate_with_tools(
         self,
@@ -150,11 +183,8 @@ class ConversationOrchestratorService:
         tools = self.tool_registry.definitions()
 
         for _ in range(self.MAX_TOOL_ITERATIONS):
-            response = await self.provider.generate(
-                LLMRequest(
-                    messages=conversation,
-                    tools=tools,
-                )
+            response = await self._generate_with_retry(
+                LLMRequest(messages=conversation, tools=tools)
             )
 
             if not response.tool_calls:
@@ -201,10 +231,16 @@ class ConversationOrchestratorService:
             user_id=user_id,
             context=context,
         )
-
-        response = await self._generate_with_tools(
-            messages=context.messages,
-        )
+        try:
+            response = await self._generate_with_tools(
+                messages=context.messages,
+            )
+        except Exception:
+            logger.exception(
+                "Conversation generation failed",
+                extra={"chat_id": str(chat_id), "user_id": str(user_id)},
+            )
+            raise
 
         if not response.content:
             raise LLMProviderError()
@@ -214,6 +250,32 @@ class ConversationOrchestratorService:
             user_id=user_id,
             content=response.content,
         )
+
+    def _sse_error(self, code: str, message: str) -> str:
+        payload = json.dumps({"error": {"code": code, "message": message}})
+
+        return f"event: error\ndata: {payload}\n\n"
+
+    async def _stream_with_retry(self, request: LLMRequest) -> AsyncIterator[str]:
+        for attempt in range(self.MAX_PROVIDER_RETRIES + 1):
+            started = False
+
+            try:
+                async for token in self.provider.generate_stream(request):
+                    started = True
+                    yield token
+
+                return
+
+            except LLMProviderTransientError:
+                if started or attempt >= self.MAX_PROVIDER_RETRIES:
+                    raise
+
+                logger.warning(
+                    "Transient streaming provider error", extra={"attempt": attempt + 1}
+                )
+
+                await asyncio.sleep(2**attempt)
 
     async def stream_message(
         self,
@@ -235,20 +297,67 @@ class ConversationOrchestratorService:
 
         buffer: list[str] = []
 
-        async for token in self.provider.generate_stream(
-            LLMRequest(
-                messages=context.messages,
-                tools=self.tool_registry.definitions(),
-            )
-        ):
-            buffer.append(token)
+        try:
+            async for token in self._stream_with_retry(
+                LLMRequest(
+                    messages=context.messages,
+                    tools=self.tool_registry.definitions(),
+                )
+            ):
+                buffer.append(token)
 
-            yield f"data: {token}\n\n"
+                yield f"data: {token}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info(
+                "AI stream cancelled by client",
+                extra={"chat_id": str(chat_id), "user_id": str(user_id)},
+            )
+            raise
+        except LLMProviderTransientError as ex:
+            logger.exception(
+                "AI streaming failed",
+                extra={"chat_id": str(chat_id), "user_id": str(user_id)},
+            )
+            yield self._sse_error(code=ex.code, message=ex.message)
+            return
+
+        except LLMProviderError as ex:
+            yield self._sse_error(code=ex.code, message=ex.message)
+            return
+
+        except Exception:
+            logger.exception(
+                "Unexpected streaming error",
+                extra={"chat_id": str(chat_id), "user_id": str(user_id)},
+            )
+
+            yield self._sse_error(
+                code="AI_STREAM_ERROR",
+                message="The AI response stream was interrupted.",
+            )
+            return
+
+        if not buffer:
+            yield self._sse_error(
+                code="AI_EMPTY_RESPONSE",
+                message="The AI provider returned an empty response.",
+            )
+            return
 
         final_content = "".join(buffer)
 
         if not final_content:
-            raise LLMProviderError()
+            logger.error(
+                "AI stream completed without content",
+                extra={"chat_id": str(chat_id), "user_id": str(user_id)},
+            )
+
+            yield self._sse_error(
+                code="AI_EMPTY_RESPONSE",
+                message="The AI provider returned an empty response.",
+            )
+            return
 
         await self.message_service.create_assistant_message(
             chat_id=chat_id,

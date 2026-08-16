@@ -17,5 +17,7 @@ class LLMProviderFactory:
 
             case AIProvider.OLLAMA:
                 return OllamaProvider(
-                    host=settings.ollama_host, default_model=settings.default_model
+                    host=settings.ollama_host,
+                    default_model=settings.default_model,
+                    timeout=settings.request_timeout_seconds,
                 )

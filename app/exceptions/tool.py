@@ -15,5 +15,5 @@ class ToolExecutionError(AppException):
 
 class ToolLoopLimitError(AppException):
     status_code = 500
-    code = "TOOL_LOOP_LIMIT_EXEEDED"
+    code = "TOOL_LOOP_LIMIT_EXCEEDED"
     message = "The maximum number of tool iterations was exceeded."

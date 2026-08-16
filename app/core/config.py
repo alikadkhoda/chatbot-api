@@ -13,6 +13,8 @@ class AISetting(BaseModel):
     default_model: str = "qwen3"
     ollama_host: str = "http://localhost:11434"
 
+    request_timeout_seconds: float = 60.0
+
     context_window: int = 8192
     reserve_tokens: int = 2048
     summary_trigger_tokens: int = 6000

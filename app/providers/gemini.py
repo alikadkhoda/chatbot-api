@@ -1,10 +1,11 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from google import genai
 from google.genai import types
 
-from app.exceptions.provider import LLMProviderError
+from app.exceptions.provider import LLMProviderError, LLMProviderTimeoutError
 from app.providers.llm import LLMProvider
 from app.providers.prompt_builder import build_prompt
 from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest, LLMResponse
@@ -12,19 +13,27 @@ from app.schemas.tool import ToolCall, ToolDefinition
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str, default_model: str) -> None:
+    def __init__(self, api_key: str, default_model: str, timeout: float) -> None:
         self._client = genai.Client(api_key=api_key)
         self._default_model = default_model
+        self._timeout = timeout
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         contents, system_instruction = self._contents(request.messages)
         config = self._config(request.tools, system_instruction)
         try:
-            response = await self._client.aio.models.generate_content(
-                model=request.model or self._default_model,
-                contents=contents,
-                config=config,
+            response = await asyncio.wait_for(
+                self._client.aio.models.generate_content(
+                    model=request.model or self._default_model,
+                    contents=contents,
+                    config=config,
+                ),
+                timeout=self._timeout,
             )
+
+        except asyncio.TimeoutError as ex:
+            raise LLMProviderTimeoutError() from ex
+
         except Exception as ex:
             raise LLMProviderError() from ex
 

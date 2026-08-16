@@ -1,18 +1,20 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
 from ollama import AsyncClient
 
-from app.exceptions.provider import LLMProviderError
+from app.exceptions.provider import LLMProviderError, LLMProviderTimeoutError
 from app.providers.llm import LLMProvider
 from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest, LLMResponse
 from app.schemas.tool import ToolCall, ToolDefinition
 
 
 class OllamaProvider(LLMProvider):
-    def __init__(self, host: str, default_model: str) -> None:
+    def __init__(self, host: str, default_model: str, timeout: float) -> None:
         self._client = AsyncClient(host=host)
         self._default_model = default_model
+        self._timeout = timeout
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         messages = self._messages(messages=request.messages)
@@ -22,16 +24,21 @@ class OllamaProvider(LLMProvider):
         print("TOOLS:", tools)
 
         try:
-            response = await self._client.chat(
-                model=request.model or self._default_model,
-                messages=messages,
-                tools=tools or None,
-                think=False,
+            response = await asyncio.wait_for(
+                self._client.chat(
+                    model=request.model or self._default_model,
+                    messages=messages,
+                    tools=tools or None,
+                    think=False,
+                ),
+                timeout=self._timeout,
             )
+
+        except asyncio.TimeoutError as ex:
+            raise LLMProviderTimeoutError() from ex
+
         except Exception as ex:
             raise LLMProviderError() from ex
-
-        print("RAW RESPONSE:", response)
 
         content = response.message.content or None
 
