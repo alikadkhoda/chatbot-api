@@ -22,9 +22,15 @@ class LLMMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class LLMUsage(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
 class LLMResponse(BaseModel):
     content: str | None = Field(min_length=1)
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: LLMUsage | None = None
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -35,3 +41,8 @@ class LLMRequest(BaseModel):
     tools: list[ToolDefinition] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
+
+
+class LLMStreamChunk(BaseModel):
+    content: str | None = None
+    usage: LLMUsage | None = None

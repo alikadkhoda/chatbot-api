@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 
-from app.schemas.llm import LLMRequest, LLMResponse
+from app.schemas.llm import LLMRequest, LLMResponse, LLMStreamChunk
 
 
 class LLMProvider(ABC):
@@ -9,4 +9,6 @@ class LLMProvider(ABC):
     async def generate(self, request: LLMRequest) -> LLMResponse: ...
 
     @abstractmethod
-    def generate_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]: ...
+    def generate_stream(
+        self, request: LLMRequest
+    ) -> AsyncGenerator[LLMStreamChunk, None]: ...

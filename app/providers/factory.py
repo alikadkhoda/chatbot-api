@@ -13,6 +13,7 @@ class LLMProviderFactory:
                 return GeminiProvider(
                     api_key=settings.gemini_api_key,
                     default_model=settings.default_model,
+                    timeout=settings.request_timeout_seconds,
                 )
 
             case AIProvider.OLLAMA:

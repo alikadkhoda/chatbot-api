@@ -60,6 +60,10 @@ class ConversationContextBuilder:
         self.summary_trigger_tokens = summary_trigger_tokens
 
     @property
+    def reserved_token(self) -> int:
+        return self.reserve_tokens
+
+    @property
     def message_budget(self) -> int:
         return self.max_tokens - self.reserve_tokens
 

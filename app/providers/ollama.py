@@ -6,7 +6,14 @@ from ollama import AsyncClient
 
 from app.exceptions.provider import LLMProviderError, LLMProviderTimeoutError
 from app.providers.llm import LLMProvider
-from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest, LLMResponse
+from app.schemas.llm import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMRequest,
+    LLMResponse,
+    LLMStreamChunk,
+    LLMUsage,
+)
 from app.schemas.tool import ToolCall, ToolDefinition
 
 
@@ -34,6 +41,11 @@ class OllamaProvider(LLMProvider):
                 timeout=self._timeout,
             )
 
+            usage = LLMUsage(
+                input_tokens=response.prompt_eval_count or 0,
+                output_tokens=response.eval_count or 0,
+            )
+
         except asyncio.TimeoutError as ex:
             raise LLMProviderTimeoutError() from ex
 
@@ -53,9 +65,11 @@ class OllamaProvider(LLMProvider):
         if content is None and not tool_calls:
             raise LLMProviderError()
 
-        return LLMResponse(content=content, tool_calls=tool_calls)
+        return LLMResponse(content=content, tool_calls=tool_calls, usage=usage)
 
-    async def generate_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
+    async def generate_stream(
+        self, request: LLMRequest
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
         messages = self._messages(messages=request.messages)
 
         try:
@@ -69,8 +83,19 @@ class OllamaProvider(LLMProvider):
             async for chunk in stream:
                 content = chunk.message.content
 
-                if content:
-                    yield content
+                usage = None
+
+                if chunk.prompt_eval_count is not None or chunk.eval_count is not None:
+                    usage = LLMUsage(
+                        input_tokens=chunk.prompt_eval_count or 0,
+                        output_tokens=chunk.eval_count or 0,
+                    )
+
+                if content or usage is not None:
+                    yield LLMStreamChunk(content=content or None, usage=usage)
+
+        except asyncio.TimeoutError as ex:
+            raise LLMProviderTimeoutError() from ex
 
         except Exception as ex:
             raise LLMProviderError() from ex

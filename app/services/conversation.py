@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+from app.core.config import settings
 from app.exceptions.provider import LLMProviderError, LLMProviderTransientError
 from app.exceptions.tool import (
     ToolExecutionError,
@@ -16,6 +17,8 @@ from app.schemas.llm import (
     LLMMessageRole,
     LLMRequest,
     LLMResponse,
+    LLMStreamChunk,
+    LLMUsage,
 )
 from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.tool import ToolCall
@@ -23,11 +26,14 @@ from app.services.chat import ChatService
 from app.services.conversation_context import (
     ContextBuildResult,
     ConversationContextBuilder,
+    estimate_message_tokens,
+    estimate_tokens,
 )
 from app.services.conversation_summary import (
     ConversationSummaryService,
 )
 from app.services.message import MessageService
+from app.services.rate_limit import RateLimitService
 from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -46,6 +52,7 @@ class ConversationOrchestratorService:
         context_builder: ConversationContextBuilder,
         summary_service: ConversationSummaryService,
         system_prompt: str,
+        rate_limit_service: RateLimitService,
     ) -> None:
         self.chat_service = chat_service
         self.message_service = message_service
@@ -54,6 +61,7 @@ class ConversationOrchestratorService:
         self.context_builder = context_builder
         self.summary_service = summary_service
         self.system_prompt = system_prompt
+        self.rate_limit_service = rate_limit_service
 
     async def _prepare_conversation(
         self,
@@ -107,6 +115,7 @@ class ConversationOrchestratorService:
         )
 
         new_summary = await self.summary_service.summarize(
+            user_id=user_id,
             messages=context.omitted_messages,
             existing_summary=existing_summary,
         )
@@ -177,14 +186,34 @@ class ConversationOrchestratorService:
 
     async def _generate_with_tools(
         self,
-        messages: list[LLMMessage],
+        *,
+        user_id: UUID,
+        context: ContextBuildResult,
     ) -> LLMResponse:
-        conversation = list(messages)
+        conversation = list(context.messages)
         tools = self.tool_registry.definitions()
 
         for _ in range(self.MAX_TOOL_ITERATIONS):
-            response = await self._generate_with_retry(
-                LLMRequest(messages=conversation, tools=tools)
+            request = LLMRequest(messages=conversation, tools=tools)
+
+            estimated_input_tokens = sum(
+                estimate_message_tokens(message) for message in conversation
+            )
+
+            self.rate_limit_service.check_cost_token_limit(
+                user_id=user_id,
+                input_tokens=estimated_input_tokens,
+                max_output_tokens=settings.ai.max_output_tokens,
+            )
+
+            response = await self._generate_with_retry(request=request)
+
+            input_tokens, output_tokens = self._resolve_usage(
+                response=response, input_tokens=estimated_input_tokens
+            )
+
+            self.rate_limit_service.record_provider_usage(
+                user_id=user_id, input_tokens=input_tokens, output_tokens=output_tokens
             )
 
             if not response.tool_calls:
@@ -214,12 +243,24 @@ class ConversationOrchestratorService:
 
         raise ToolLoopLimitError()
 
+    def _resolve_usage(
+        self, response: LLMResponse, input_tokens: int
+    ) -> tuple[int, int]:
+        if response.usage is not None:
+            return (response.usage.input_tokens, response.usage.output_tokens)
+
+        output_tokens = estimate_tokens(response.content or "")
+
+        return input_tokens, output_tokens
+
     async def send_message(
         self,
         chat_id: UUID,
         user_id: UUID,
         content: str,
     ) -> MessageRead:
+        self.rate_limit_service.consume_request(user_id=user_id)
+
         context = await self._prepare_conversation(
             chat_id=chat_id,
             user_id=user_id,
@@ -231,9 +272,11 @@ class ConversationOrchestratorService:
             user_id=user_id,
             context=context,
         )
+
         try:
             response = await self._generate_with_tools(
-                messages=context.messages,
+                user_id=user_id,
+                context=context,
             )
         except Exception:
             logger.exception(
@@ -256,14 +299,16 @@ class ConversationOrchestratorService:
 
         return f"event: error\ndata: {payload}\n\n"
 
-    async def _stream_with_retry(self, request: LLMRequest) -> AsyncIterator[str]:
+    async def _stream_with_retry(
+        self, request: LLMRequest
+    ) -> AsyncIterator[LLMStreamChunk]:
         for attempt in range(self.MAX_PROVIDER_RETRIES + 1):
             started = False
 
             try:
-                async for token in self.provider.generate_stream(request):
+                async for chunk in self.provider.generate_stream(request):
                     started = True
-                    yield token
+                    yield chunk
 
                 return
 
@@ -283,6 +328,8 @@ class ConversationOrchestratorService:
         user_id: UUID,
         content: str,
     ) -> AsyncIterator[str]:
+        self.rate_limit_service.consume_request(user_id=user_id)
+
         context = await self._prepare_conversation(
             chat_id=chat_id,
             user_id=user_id,
@@ -295,18 +342,28 @@ class ConversationOrchestratorService:
             context=context,
         )
 
+        self.rate_limit_service.check_cost_token_limit(
+            user_id=user_id,
+            input_tokens=context.estimated_tokens,
+            max_output_tokens=settings.ai.max_output_tokens,
+        )
+
+        provider_usage: LLMUsage | None = None
         buffer: list[str] = []
 
         try:
-            async for token in self._stream_with_retry(
-                LLMRequest(
+            async for chunk in self._stream_with_retry(
+                request=LLMRequest(
                     messages=context.messages,
                     tools=self.tool_registry.definitions(),
-                )
+                ),
             ):
-                buffer.append(token)
+                if chunk.content:
+                    buffer.append(chunk.content)
+                    yield f"data: {chunk.content}\n\n"
 
-                yield f"data: {token}\n\n"
+                if chunk.usage is not None:
+                    provider_usage = chunk.usage
 
         except asyncio.CancelledError:
             logger.info(
@@ -358,6 +415,17 @@ class ConversationOrchestratorService:
                 message="The AI provider returned an empty response.",
             )
             return
+
+        if provider_usage is not None:
+            input_tokens = provider_usage.input_tokens
+            output_tokens = provider_usage.output_tokens
+        else:
+            input_tokens = context.estimated_tokens
+            output_tokens = estimate_tokens(final_content)
+
+        self.rate_limit_service.record_provider_usage(
+            user_id=user_id, input_tokens=input_tokens, output_tokens=output_tokens
+        )
 
         await self.message_service.create_assistant_message(
             chat_id=chat_id,

@@ -8,7 +8,14 @@ from google.genai import types
 from app.exceptions.provider import LLMProviderError, LLMProviderTimeoutError
 from app.providers.llm import LLMProvider
 from app.providers.prompt_builder import build_prompt
-from app.schemas.llm import LLMMessage, LLMMessageRole, LLMRequest, LLMResponse
+from app.schemas.llm import (
+    LLMMessage,
+    LLMMessageRole,
+    LLMRequest,
+    LLMResponse,
+    LLMStreamChunk,
+    LLMUsage,
+)
 from app.schemas.tool import ToolCall, ToolDefinition
 
 
@@ -31,6 +38,14 @@ class GeminiProvider(LLMProvider):
                 timeout=self._timeout,
             )
 
+            usage = None
+
+            if response.usage_metadata:
+                usage = LLMUsage(
+                    input_tokens=response.usage_metadata.prompt_token_count or 0,
+                    output_tokens=response.usage_metadata.candidates_token_count or 0,
+                )
+
         except asyncio.TimeoutError as ex:
             raise LLMProviderTimeoutError() from ex
 
@@ -52,9 +67,11 @@ class GeminiProvider(LLMProvider):
         if content is None and not tool_calls:
             raise LLMProviderError()
 
-        return LLMResponse(content=response.text, tool_calls=tool_calls)
+        return LLMResponse(content=response.text, tool_calls=tool_calls, usage=usage)
 
-    async def generate_stream(self, request: LLMRequest) -> AsyncGenerator[str, None]:
+    async def generate_stream(
+        self, request: LLMRequest
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
         prompt = build_prompt(request.messages)
 
         try:
