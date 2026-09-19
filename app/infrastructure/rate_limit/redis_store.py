@@ -1,83 +1,32 @@
 import time
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 from redis.asyncio import Redis
 
-from app.infrastructure.rate_limit.result import RateLimitResult, RequestRateLimitResult
+from app.infrastructure.rate_limit.result import (
+    RateLimitResult,
+    RequestRateLimitResult,
+    UsageReservationResult,
+)
 from app.infrastructure.rate_limit.store import RateLimitStore
+
+SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
 REQUEST_WINDOW_SECONDS = 60
 DAY_WINDOW_SECONDS = 24 * 60 * 60
 COST_SCALE = 1_000_000
 
-INCREMENT_REQUEST_SCRIPT = """
-local minute_limit = tonumber(ARGV[1])
-local daily_limit = tonumber(ARGV[2])
+INCREMENT_REQUEST_SCRIPT = (SCRIPTS_DIR / "request.lua").read_text()
 
-local minute_current = redis.call("GET", KEYS[1])
-local daily_current = redis.call("GET", KEYS[2])
+INCREMENT_AMOUNT_SCRIPT = (SCRIPTS_DIR / "amount.lua").read_text()
 
-if not minute_current then
-    minute_current = 0
-else
-    minute_current = tonumber(minute_current)
-end
+RESERVE_USAGE_SCRIPT = (SCRIPTS_DIR / "usage.lua").read_text()
 
-if not daily_current then
-    daily_current = 0
-else
-    daily_current = tonumber(daily_current)
-end
+SETTLE_USAGE_SCRIPT = (SCRIPTS_DIR / "settle.lua").read_text()
 
-if minute_current >= minute_limit then
-    return {0, minute_current, daily_current}
-end
-
-if daily_current >= daily_limit then
-    return {0, minute_current, daily_current}
-end
-
-if minute_current == 0 then
-    redis.call("SET", KEYS[1], 1, "EX", ARGV[3])
-else
-    redis.call("INCR", KEYS[1])
-end
-
-if daily_current == 0 then
-    redis.call("SET", KEYS[2], 1, "EX", ARGV[4])
-else
-    redis.call("INCR", KEYS[2])
-end
-
-return {1, minute_current + 1, daily_current + 1}
-"""
-
-INCREMENT_AMOUNT_SCRIPT = """
-local requested = tonumber(ARGV[2])
-local limit = tonumber(ARGV[1])
-
-if requested > limit then
-    return {0, 0}
-end
-
-local current = redis.call("GET", KEYS[1])
-
-if not current then
-    redis.call("SET", KEYS[1], ARGV[2], "EX", ARGV[3])
-    return {1, ARGV[2]}
-end
-
-current = tonumber(current)
-
-if current + tonumber(ARGV[2]) > limit then
-    return {0, current}
-end
-
-current = redis.call("INCRBY", KEYS[1], ARGV[2])
-
-return {1, current}
-"""
+RELEASE_USAGE_SCRIPT = (SCRIPTS_DIR / "release.lua").read_text()
 
 
 class RedisRateLimitStore(RateLimitStore):
@@ -195,26 +144,140 @@ class RedisRateLimitStore(RateLimitStore):
             current=int(result[1]),
         )
 
-    # async def delete_user(self, user_id: UUID) -> None:
-    #     now = int(time.time())
-    #     minute_window = now // REQUEST_WINDOW_SECONDS
-    #     daily_window = now // DAY_WINDOW_SECONDS
+    async def reserve_usage(
+        self,
+        user_id: UUID,
+        tokens: int,
+        cost: float,
+        token_limit: int,
+        cost_limit: float,
+    ) -> UsageReservationResult:
+        if tokens < 0:
+            raise ValueError("tokens must be non-negative")
 
-    #     await self._redis.delete(
-    #     (
-    #         f"rate_limit:user:{user_id}:"
-    #         f"minute:request:{minute_window}"
-    #     ),
-    #     (
-    #         f"rate_limit:user:{user_id}:"
-    #         f"day:request:{daily_window}"
-    #     ),
-    #     (
-    #         f"rate_limit:user:{user_id}:"
-    #         f"day:token:{daily_window}"
-    #     ),
-    #     f"rate_limit:user:{user_id}:cost",
-    # )
+        if cost < 0:
+            raise ValueError("cost must be non-negative")
+
+        now = int(time.time())
+
+        daily_ttl = DAY_WINDOW_SECONDS - (now % DAY_WINDOW_SECONDS)
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        token_key = f"rate_limit:user:{user_id}:day:token:{daily_window}"
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+        cost_key = f"rate_limit:user:{user_id}:day:cost:{daily_window}"
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        scaled_cost = int(Decimal(str(cost)) * COST_SCALE)
+        scaled_limit = int(Decimal(str(cost_limit)) * COST_SCALE)
+
+        result = await self._redis.eval(
+            RESERVE_USAGE_SCRIPT,
+            4,
+            token_key,
+            reserved_token_key,
+            cost_key,
+            reserved_cost_key,
+            token_limit,
+            tokens,
+            scaled_limit,
+            scaled_cost,
+            daily_ttl,
+        )
+
+        return UsageReservationResult(
+            allowed=bool(result[0]),
+            token_current=int(result[1]),
+            cost_current=int(result[2]) / COST_SCALE,
+        )
+
+    async def settle_usage(
+        self,
+        user_id: UUID,
+        tokens: int,
+        cost: float,
+        reserved_tokens: int,
+        reserved_cost: float,
+    ) -> None:
+        if tokens < 0:
+            raise ValueError("tokens must be non-negative")
+
+        if cost < 0:
+            raise ValueError("cost must be non-negative")
+
+        if reserved_tokens < 0:
+            raise ValueError("reserved_tokens must be non-negative")
+
+        if reserved_cost < 0:
+            raise ValueError("reserved_cost must be non-negative")
+
+        now = int(time.time())
+
+        daily_ttl = DAY_WINDOW_SECONDS - (now % DAY_WINDOW_SECONDS)
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        token_key = f"rate_limit:user:{user_id}:day:token:{daily_window}"
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+        cost_key = f"rate_limit:user:{user_id}:day:cost:{daily_window}"
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        scaled_cost = int(Decimal(str(cost)) * COST_SCALE)
+        scaled_reserved_cost = int(Decimal(str(reserved_cost)) * COST_SCALE)
+
+        await self._redis.eval(
+            SETTLE_USAGE_SCRIPT,
+            4,
+            token_key,
+            reserved_token_key,
+            cost_key,
+            reserved_cost_key,
+            tokens,
+            scaled_cost,
+            reserved_tokens,
+            scaled_reserved_cost,
+            daily_ttl,
+        )
+
+    async def release_usage(
+        self, user_id: UUID, reserved_tokens: int, reserved_cost: float
+    ) -> None:
+        if reserved_tokens < 0:
+            raise ValueError("tokens must be non-negative")
+
+        if reserved_cost < 0:
+            raise ValueError("cost must be non-negative")
+
+        now = int(time.time())
+
+        daily_ttl = DAY_WINDOW_SECONDS - (now % DAY_WINDOW_SECONDS)
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        scaled_cost = int(Decimal(str(reserved_cost)) * COST_SCALE)
+
+        await self._redis.eval(
+            RELEASE_USAGE_SCRIPT,
+            2,
+            reserved_token_key,
+            reserved_cost_key,
+            reserved_tokens,
+            scaled_cost,
+            daily_ttl,
+        )
 
     async def delete_user(self, user_id: UUID) -> None:
         pattern = f"rate_limit:user:{user_id}:*"

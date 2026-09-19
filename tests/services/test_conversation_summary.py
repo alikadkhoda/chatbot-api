@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from app.exceptions.rate_limit import UserQuotaExceededError
+from app.infrastructure.rate_limit.result import UsageReservation
 from app.schemas.llm import (
     LLMMessage,
     LLMMessageRole,
@@ -23,8 +24,11 @@ def provider():
 def rate_limit_service():
     service = Mock()
 
-    service.check_cost_token_limit = Mock()
-    service.record_provider_usage = Mock()
+    service.check_cost_token_limit = AsyncMock(
+        return_value=UsageReservation(tokens=1000, cost=1.0)
+    )
+    service.record_provider_usage = AsyncMock()
+    service.release_usage = AsyncMock()
 
     return service
 
@@ -109,11 +113,44 @@ async def test_summary_records_actual_provider_usage(
         ],
     )
 
-    rate_limit_service.record_provider_usage.assert_called_once_with(
+    reservation = rate_limit_service.check_cost_token_limit.return_value
+
+    rate_limit_service.record_provider_usage.assert_awaited_once_with(
         user_id=user_id,
         input_tokens=123,
         output_tokens=45,
+        reservation=reservation,
     )
+    rate_limit_service.release_usage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_summary_releases_reservation_when_provider_fails(
+    summary_service,
+    provider,
+    rate_limit_service,
+):
+    provider.generate = AsyncMock(side_effect=RuntimeError("provider failed"))
+
+    user_id = uuid4()
+
+    result = await summary_service.summarize(
+        user_id=user_id,
+        messages=[
+            LLMMessage(
+                role=LLMMessageRole.USER,
+                content="Hello",
+            )
+        ],
+        existing_summary="Old summary",
+    )
+
+    assert result == "Old summary"
+    rate_limit_service.release_usage.assert_awaited_once_with(
+        user_id=user_id,
+        reservation=rate_limit_service.check_cost_token_limit.return_value,
+    )
+    rate_limit_service.record_provider_usage.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -142,8 +179,10 @@ async def test_summary_uses_estimated_output_when_provider_usage_missing(
     )
 
     call = rate_limit_service.record_provider_usage.call_args
+    reservation = rate_limit_service.check_cost_token_limit.return_value
 
     assert call.kwargs["user_id"] == user_id
+    assert call.kwargs["reservation"] is reservation
     assert call.kwargs["input_tokens"] > 0
     assert call.kwargs["output_tokens"] > 0
 
@@ -208,7 +247,11 @@ async def test_summary_does_not_record_usage_when_provider_fails(
 
     assert result == "Old summary"
 
-    rate_limit_service.record_provider_usage.assert_not_called()
+    rate_limit_service.record_provider_usage.assert_not_awaited()
+    rate_limit_service.release_usage.assert_awaited_once_with(
+        user_id=user_id,
+        reservation=rate_limit_service.check_cost_token_limit.return_value,
+    )
 
 
 @pytest.mark.asyncio
@@ -233,7 +276,8 @@ async def test_summary_quota_error_is_propagated(
         )
 
     provider.generate.assert_not_called()
-    rate_limit_service.record_provider_usage.assert_not_called()
+    rate_limit_service.record_provider_usage.assert_not_awaited()
+    rate_limit_service.release_usage.assert_not_awaited()
 
 
 def test_format_tool_message(summary_service):

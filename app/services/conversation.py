@@ -200,20 +200,29 @@ class ConversationOrchestratorService:
                 estimate_message_tokens(message) for message in conversation
             )
 
-            self.rate_limit_service.check_cost_token_limit(
+            reservation = await self.rate_limit_service.check_cost_token_limit(
                 user_id=user_id,
                 input_tokens=estimated_input_tokens,
                 max_output_tokens=settings.ai.max_output_tokens,
             )
 
-            response = await self._generate_with_retry(request=request)
+            try:
+                response = await self._generate_with_retry(request=request)
+            except Exception:
+                await self.rate_limit_service.release_usage(
+                    user_id=user_id, reservation=reservation
+                )
+                raise
 
             input_tokens, output_tokens = self._resolve_usage(
                 response=response, input_tokens=estimated_input_tokens
             )
 
-            self.rate_limit_service.record_provider_usage(
-                user_id=user_id, input_tokens=input_tokens, output_tokens=output_tokens
+            await self.rate_limit_service.record_provider_usage(
+                user_id=user_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                reservation=reservation,
             )
 
             if not response.tool_calls:
@@ -259,7 +268,7 @@ class ConversationOrchestratorService:
         user_id: UUID,
         content: str,
     ) -> MessageRead:
-        self.rate_limit_service.consume_request(user_id=user_id)
+        await self.rate_limit_service.consume_request(user_id=user_id)
 
         context = await self._prepare_conversation(
             chat_id=chat_id,
@@ -328,7 +337,7 @@ class ConversationOrchestratorService:
         user_id: UUID,
         content: str,
     ) -> AsyncIterator[str]:
-        self.rate_limit_service.consume_request(user_id=user_id)
+        await self.rate_limit_service.consume_request(user_id=user_id)
 
         context = await self._prepare_conversation(
             chat_id=chat_id,
@@ -342,7 +351,7 @@ class ConversationOrchestratorService:
             context=context,
         )
 
-        self.rate_limit_service.check_cost_token_limit(
+        reservation = await self.rate_limit_service.check_cost_token_limit(
             user_id=user_id,
             input_tokens=context.estimated_tokens,
             max_output_tokens=settings.ai.max_output_tokens,
@@ -366,12 +375,20 @@ class ConversationOrchestratorService:
                     provider_usage = chunk.usage
 
         except asyncio.CancelledError:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
+
             logger.info(
                 "AI stream cancelled by client",
                 extra={"chat_id": str(chat_id), "user_id": str(user_id)},
             )
             raise
         except LLMProviderTransientError as ex:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
+
             logger.exception(
                 "AI streaming failed",
                 extra={"chat_id": str(chat_id), "user_id": str(user_id)},
@@ -380,10 +397,17 @@ class ConversationOrchestratorService:
             return
 
         except LLMProviderError as ex:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
             yield self._sse_error(code=ex.code, message=ex.message)
             return
 
         except Exception:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
+
             logger.exception(
                 "Unexpected streaming error",
                 extra={"chat_id": str(chat_id), "user_id": str(user_id)},
@@ -396,6 +420,9 @@ class ConversationOrchestratorService:
             return
 
         if not buffer:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
             yield self._sse_error(
                 code="AI_EMPTY_RESPONSE",
                 message="The AI provider returned an empty response.",
@@ -405,6 +432,9 @@ class ConversationOrchestratorService:
         final_content = "".join(buffer)
 
         if not final_content:
+            await self.rate_limit_service.release_usage(
+                user_id=user_id, reservation=reservation
+            )
             logger.error(
                 "AI stream completed without content",
                 extra={"chat_id": str(chat_id), "user_id": str(user_id)},
@@ -423,8 +453,11 @@ class ConversationOrchestratorService:
             input_tokens = context.estimated_tokens
             output_tokens = estimate_tokens(final_content)
 
-        self.rate_limit_service.record_provider_usage(
-            user_id=user_id, input_tokens=input_tokens, output_tokens=output_tokens
+        await self.rate_limit_service.record_provider_usage(
+            user_id=user_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reservation=reservation,
         )
 
         await self.message_service.create_assistant_message(

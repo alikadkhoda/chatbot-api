@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from app.exceptions.tool import ToolLoopLimitError
+from app.infrastructure.rate_limit.result import UsageReservation
 from app.schemas.llm import (
     LLMMessage,
     LLMMessageRole,
@@ -21,6 +22,16 @@ def orchestrator():
     service.provider = Mock()
     service.tool_registry = Mock()
     service.rate_limit_service = Mock()
+
+    service.rate_limit_service.check_cost_token_limit = AsyncMock()
+    service.rate_limit_service.record_provider_usage = AsyncMock()
+    service.rate_limit_service.release_usage = AsyncMock()
+    service.rate_limit_service.consume_request = AsyncMock()
+
+    service.rate_limit_service.check_cost_token_limit.return_value = UsageReservation(
+        tokens=1000,
+        cost=1.0,
+    )
 
     return service
 
@@ -67,11 +78,62 @@ async def test_generate_with_tools_records_actual_provider_usage(
 
     assert result is response
 
-    orchestrator.rate_limit_service.record_provider_usage.assert_called_once_with(
-        user_id=user_id,
-        input_tokens=120,
-        output_tokens=30,
+    reservation = UsageReservation(tokens=1000, cost=1.0)
+
+    orchestrator.rate_limit_service.check_cost_token_limit.return_value = reservation
+
+    orchestrator.rate_limit_service.record_provider_usage.assert_awaited_once_with(
+        user_id=user_id, input_tokens=120, output_tokens=30, reservation=reservation
     )
+
+    orchestrator.rate_limit_service.release_usage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_with_tools_releases_reservation_when_provider_fails(
+    orchestrator,
+):
+    user_id = uuid4()
+
+    reservation = UsageReservation(
+        tokens=1000,
+        cost=1.0,
+    )
+
+    orchestrator.rate_limit_service.check_cost_token_limit = AsyncMock(
+        return_value=reservation,
+    )
+
+    orchestrator.rate_limit_service.release_usage = AsyncMock()
+
+    orchestrator._generate_with_retry = AsyncMock(
+        side_effect=RuntimeError("provider failure")
+    )
+
+    orchestrator.tool_registry.definitions.return_value = []
+
+    context = make_context(
+        [
+            LLMMessage(
+                role=LLMMessageRole.USER,
+                content="Hello",
+            )
+        ],
+        estimated_tokens=100,
+    )
+
+    with pytest.raises(RuntimeError):
+        await orchestrator._generate_with_tools(
+            user_id=user_id,
+            context=context,
+        )
+
+    orchestrator.rate_limit_service.release_usage.assert_awaited_once_with(
+        user_id=user_id,
+        reservation=reservation,
+    )
+
+    orchestrator.rate_limit_service.record_provider_usage.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -194,12 +256,30 @@ async def test_each_provider_call_records_its_own_usage(
 ):
     user_id = uuid4()
 
+    reservation_1 = UsageReservation(
+        tokens=110,
+        cost=1.0,
+    )
+
+    reservation_2 = UsageReservation(
+        tokens=170,
+        cost=1.5,
+    )
+
+    orchestrator.rate_limit_service.check_cost_token_limit = AsyncMock(
+        side_effect=[
+            reservation_1,
+            reservation_2,
+        ]
+    )
+
+    orchestrator.rate_limit_service.record_provider_usage = AsyncMock()
+    orchestrator.rate_limit_service.release_usage = AsyncMock()
+
     tool_call = ToolCall(
         tool_name="validate_bank_card",
         arguments={"card_number": "123"},
     )
-    tool_call.tool_name = "validate_bank_card"
-    tool_call.arguments = {"card_number": "123"}
 
     first_response = LLMResponse(
         content="validate card.",
@@ -228,7 +308,9 @@ async def test_each_provider_call_records_its_own_usage(
 
     orchestrator.tool_registry.definitions.return_value = []
 
-    orchestrator._execute_tool_call = AsyncMock(return_value="valid")
+    orchestrator._execute_tool_call = AsyncMock(
+        return_value="valid",
+    )
 
     context = make_context(
         [
@@ -247,21 +329,27 @@ async def test_each_provider_call_records_its_own_usage(
 
     assert result is second_response
 
-    assert orchestrator.rate_limit_service.record_provider_usage.call_count == 2
+    assert orchestrator.rate_limit_service.check_cost_token_limit.await_count == 2
 
-    calls = orchestrator.rate_limit_service.record_provider_usage.call_args_list
+    assert orchestrator.rate_limit_service.record_provider_usage.await_count == 2
+
+    calls = orchestrator.rate_limit_service.record_provider_usage.await_args_list
 
     assert calls[0].kwargs == {
         "user_id": user_id,
         "input_tokens": 100,
         "output_tokens": 10,
+        "reservation": reservation_1,
     }
 
     assert calls[1].kwargs == {
         "user_id": user_id,
         "input_tokens": 150,
         "output_tokens": 20,
+        "reservation": reservation_2,
     }
+
+    orchestrator.rate_limit_service.release_usage.assert_not_awaited()
 
 
 ########

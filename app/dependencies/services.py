@@ -1,8 +1,11 @@
 from fastapi import Depends
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.database.session import get_session
+from app.dependencies.redis import get_redis
+from app.infrastructure.rate_limit.redis_store import RedisRateLimitStore
 from app.providers.factory import LLMProviderFactory
 from app.repositories.chat import ChatRepository
 from app.repositories.message import MessageRepository
@@ -65,8 +68,10 @@ def get_conversation_context_builder() -> ConversationContextBuilder:
     )
 
 
-def get_rate_limit_service() -> RateLimitService:
+def get_rate_limit_service(redis: Redis = Depends(get_redis)) -> RateLimitService:
+    store = RedisRateLimitStore(redis=redis)
     return RateLimitService(
+        store=store,
         max_requests_per_minute=settings.ai.max_requests_per_minute,
         max_requests_per_day=settings.ai.max_requests_per_day,
         max_tokens_per_request=settings.ai.max_tokens_per_request,

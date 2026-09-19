@@ -12,3 +12,16 @@ class RequestRateLimitResult:
     allowed: bool
     minute_current: int
     daily_current: int
+
+
+@dataclass(frozen=True, slots=True)
+class UsageReservationResult:
+    allowed: bool
+    token_current: int
+    cost_current: float
+
+
+@dataclass(frozen=True, slots=True)
+class UsageReservation:
+    tokens: int
+    cost: float

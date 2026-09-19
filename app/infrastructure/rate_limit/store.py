@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from app.infrastructure.rate_limit.result import RateLimitResult, RequestRateLimitResult
+from app.infrastructure.rate_limit.result import (
+    RateLimitResult,
+    RequestRateLimitResult,
+    UsageReservationResult,
+)
 
 
 class RateLimitStore(ABC):
@@ -28,6 +32,31 @@ class RateLimitStore(ABC):
     async def increment_cost(
         self, user_id: UUID, cost: float, limit: float
     ) -> RateLimitResult: ...
+
+    @abstractmethod
+    async def reserve_usage(
+        self,
+        user_id: UUID,
+        tokens: int,
+        cost: float,
+        token_limit: int,
+        cost_limit: float,
+    ) -> UsageReservationResult: ...
+
+    @abstractmethod
+    async def settle_usage(
+        self,
+        user_id: UUID,
+        tokens: int,
+        cost: float,
+        reserved_tokens: int,
+        reserved_cost: float,
+    ) -> None: ...
+
+    @abstractmethod
+    async def release_usage(
+        self, user_id: UUID, reserved_tokens: int, reserved_cost: float
+    ) -> None: ...
 
     @abstractmethod
     async def delete_user(self, user_id: UUID) -> None: ...

@@ -7,6 +7,7 @@ from app.exceptions.rate_limit import (
     TokenLimitExceededError,
     UserQuotaExceededError,
 )
+from app.infrastructure.rate_limit.result import UsageReservation
 from app.providers.llm import LLMProvider
 from app.schemas.llm import (
     LLMMessage,
@@ -91,12 +92,20 @@ class ConversationSummaryService:
             input_tokens = sum(
                 estimate_message_tokens(message) for message in request.messages
             )
-            self.rate_limit_service.check_cost_token_limit(
-                user_id=user_id,
-                input_tokens=input_tokens,
-                max_output_tokens=settings.ai.max_output_tokens,
+            reservation: UsageReservation = (
+                await self.rate_limit_service.check_cost_token_limit(
+                    user_id=user_id,
+                    input_tokens=input_tokens,
+                    max_output_tokens=settings.ai.max_output_tokens,
+                )
             )
-            response = await self.provider.generate(request=request)
+            try:
+                response = await self.provider.generate(request=request)
+            except Exception:
+                await self.rate_limit_service.release_usage(
+                    user_id=user_id, reservation=reservation
+                )
+                raise
 
         except (
             RateLimitExceededError,
@@ -125,8 +134,11 @@ class ConversationSummaryService:
             input_tokens = input_tokens
             output_tokens = estimate_tokens(response.content)
 
-        self.rate_limit_service.record_provider_usage(
-            user_id=user_id, input_tokens=input_tokens, output_tokens=output_tokens
+        await self.rate_limit_service.record_provider_usage(
+            user_id=user_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reservation=reservation,
         )
 
         return response.content.strip() or existing_summary

@@ -206,7 +206,8 @@ async def test_send_message_does_not_record_provider_usage_again(
         ),
     )
 
-    orchestrator.consume_request = Mock()
+    orchestrator.rate_limit_service.consume_request = AsyncMock()
+    orchestrator.rate_limit_service.record_provider_usage = AsyncMock()
 
     orchestrator._prepare_conversation = AsyncMock()
     orchestrator._update_summary_if_needed = AsyncMock()
@@ -223,4 +224,4 @@ async def test_send_message_does_not_record_provider_usage_again(
         content="Hello",
     )
 
-    orchestrator.rate_limit_service.record_provider_usage.assert_not_called()
+    orchestrator.rate_limit_service.record_provider_usage.assert_not_awaited()

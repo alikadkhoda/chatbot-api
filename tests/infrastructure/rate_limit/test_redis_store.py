@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import AsyncGenerator
 from uuid import uuid4
 
@@ -846,6 +847,307 @@ async def test_get_cost_count(redis: Redis, store: RedisRateLimitStore) -> None:
 #         await store.delete_user(user_id)
 
 ########################END_OF_DAILY_COST_TESTS########################
+
+
+########################START_OF_RESERVE_USAGE_TESTS########################
+DAY_WINDOW_SECONDS = 24 * 60 * 60
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_allows_valid_request(
+    store: RedisRateLimitStore,
+    redis: Redis,
+) -> None:
+    user_id = uuid4()
+    try:
+        result = await store.reserve_usage(
+            user_id=user_id, tokens=30, cost=2.0, token_limit=100, cost_limit=10.0
+        )
+
+        assert result.allowed is True
+        assert result.token_current == 30
+        assert result.cost_current == 2.0
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_rejects_token_limit(
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+    try:
+        first = await store.reserve_usage(
+            user_id=user_id, tokens=80, cost=2.0, token_limit=100, cost_limit=10.0
+        )
+
+        second = await store.reserve_usage(
+            user_id=user_id, tokens=30, cost=2.0, token_limit=100, cost_limit=10.0
+        )
+
+        assert first.allowed is True
+        assert second.allowed is False
+        assert second.token_current == 80
+        assert second.cost_current == 2.0
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_rejects_cost_limit(
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+    try:
+        first = await store.reserve_usage(
+            user_id=user_id,
+            tokens=10,
+            cost=8.0,
+            token_limit=100,
+            cost_limit=10.0,
+        )
+
+        second = await store.reserve_usage(
+            user_id=user_id,
+            tokens=10,
+            cost=3.0,
+            token_limit=100,
+            cost_limit=10.0,
+        )
+
+        assert first.allowed is True
+        assert second.allowed is False
+        assert second.token_current == 10
+        assert second.cost_current == 8.0
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_is_atomic(
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+    try:
+        result = await store.reserve_usage(
+            user_id=user_id, tokens=90, cost=11.0, token_limit=100, cost_limit=10.0
+        )
+
+        assert result.allowed is False
+        assert result.token_current == 0
+        assert result.cost_current == 0.0
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_is_atomic_under_concurrency(
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+    try:
+        results = await asyncio.gather(
+            *[
+                store.reserve_usage(
+                    user_id=user_id,
+                    tokens=10,
+                    cost=1.0,
+                    token_limit=100,
+                    cost_limit=100.0,
+                )
+                for _ in range(20)
+            ]
+        )
+
+        allowed_results = [result for result in results if result.allowed]
+
+        rejected_results = [result for result in results if not result.allowed]
+
+        assert len(allowed_results) == 10
+        assert len(rejected_results) == 10
+
+        assert max(result.token_current for result in allowed_results) == 100
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_existing_actual_usage(
+    store: RedisRateLimitStore,
+    redis: Redis,
+) -> None:
+    user_id = uuid4()
+    now = int(time.time())
+    daily_window = now // DAY_WINDOW_SECONDS
+
+    token_key = f"rate_limit:user:{user_id}:day:token:{daily_window}"
+
+    try:
+        await redis.set(token_key, 70)
+
+        result = await store.reserve_usage(
+            user_id=user_id, tokens=20, cost=2.0, token_limit=100, cost_limit=10.0
+        )
+
+        assert result.allowed is True
+        assert result.token_current == 90
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_settle_usage_moves_reservation_to_actual_usage(
+    redis: Redis, store: RedisRateLimitStore
+) -> None:
+    user_id = uuid4()
+
+    try:
+        reservation = await store.reserve_usage(
+            user_id=user_id, tokens=100, cost=2.0, token_limit=1000, cost_limit=10.0
+        )
+
+        assert reservation.allowed is True
+        assert reservation.token_current == 100
+        assert reservation.cost_current == 2.0
+
+        await store.settle_usage(
+            user_id=user_id, tokens=80, cost=1.6, reserved_tokens=100, reserved_cost=2.0
+        )
+
+        assert await store.get_token_count(user_id=user_id) == 80
+        assert await store.get_cost(user_id=user_id) == pytest.approx(1.6)
+
+        now = int(time.time())
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        assert await redis.exists(reserved_token_key) == 0
+        assert await redis.exists(reserved_cost_key) == 0
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_release_usage_removes_reservation_without_recording_usage(
+    redis: Redis,
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+
+    try:
+        reservation = await store.reserve_usage(
+            user_id=user_id,
+            tokens=100,
+            cost=2.0,
+            token_limit=1000,
+            cost_limit=10.0,
+        )
+
+        assert reservation.allowed is True
+
+        await store.release_usage(
+            user_id=user_id,
+            reserved_tokens=100,
+            reserved_cost=2.0,
+        )
+
+        assert await store.get_token_count(user_id) is None
+        assert await store.get_cost(user_id) is None
+
+        now = int(time.time())
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        assert await redis.exists(reserved_token_key) == 0
+        assert await redis.exists(reserved_cost_key) == 0
+
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_settle_usage_allows_actual_usage_above_reservation(
+    redis: Redis,
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+
+    try:
+        reservation = await store.reserve_usage(
+            user_id=user_id,
+            tokens=100,
+            cost=2.0,
+            token_limit=1000,
+            cost_limit=10.0,
+        )
+
+        assert reservation.allowed is True
+
+        await store.settle_usage(
+            user_id=user_id,
+            tokens=120,
+            cost=2.4,
+            reserved_tokens=100,
+            reserved_cost=2.0,
+        )
+
+        assert await store.get_token_count(user_id) == 120
+        assert await store.get_cost(user_id) == pytest.approx(2.4)
+
+        now = int(time.time())
+        daily_window = now // DAY_WINDOW_SECONDS
+
+        reserved_token_key = (
+            f"rate_limit:user:{user_id}:day:token_reserved:{daily_window}"
+        )
+        reserved_cost_key = (
+            f"rate_limit:user:{user_id}:day:cost_reserved:{daily_window}"
+        )
+
+        assert await redis.exists(reserved_token_key) == 0
+        assert await redis.exists(reserved_cost_key) == 0
+
+    finally:
+        await store.delete_user(user_id)
+
+
+@pytest.mark.asyncio
+async def test_reserve_usage_ignores_cost_limit_when_disabled(
+    store: RedisRateLimitStore,
+) -> None:
+    user_id = uuid4()
+
+    try:
+        result = await store.reserve_usage(
+            user_id=user_id,
+            tokens=50,
+            cost=100.0,
+            token_limit=100,
+            cost_limit=0.0,
+        )
+
+        assert result.allowed is True
+        assert result.token_current == 50
+        assert result.cost_current == 100.0
+
+    finally:
+        await store.delete_user(user_id)
+
+
+########################END_OF_RESERVE_USAGE_TESTS########################
 
 
 ########################START_OF_DELETE_USER_TESTS########################
