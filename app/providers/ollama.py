@@ -27,9 +27,6 @@ class OllamaProvider(LLMProvider):
         messages = self._messages(messages=request.messages)
         tools = self._tools(request.tools)
 
-        print("MESSAGES:", messages)
-        print("TOOLS:", tools)
-
         try:
             response = await asyncio.wait_for(
                 self._client.chat(
@@ -76,6 +73,7 @@ class OllamaProvider(LLMProvider):
             stream = await self._client.chat(
                 model=request.model or self._default_model,
                 messages=messages,
+                tools=self._tools(request.tools) or None,
                 stream=True,
                 think=False,
             )

@@ -39,8 +39,8 @@ def provider():
 def rate_limit_service():
     service = Mock()
 
-    service.check_cost_token_limit = Mock()
-    service.record_provider_usage = Mock()
+    service.check_cost_token_limit = AsyncMock()
+    service.record_provider_usage = AsyncMock()
 
     return service
 
@@ -153,6 +153,38 @@ async def test_ollama_stream_emits_usage_only_chunk():
     assert result[0].content is None
     assert result[0].usage.input_tokens == 321
     assert result[0].usage.output_tokens == 54
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_passes_tools_to_provider():
+    provider = OllamaProvider(
+        host="http://localhost:11434",
+        default_model="llama3",
+        timeout=30,
+    )
+
+    async def fake_ollama_stream():
+        yield FakeChunk(content="ok")
+
+    provider._client.chat = AsyncMock(return_value=fake_ollama_stream())
+
+    from app.schemas.tool import ToolDefinition
+
+    tool = ToolDefinition(
+        name="validate",
+        description="Validate a value",
+        parameters={"type": "object"},
+    )
+    request = LLMRequest(
+        messages=[LLMMessage(role=LLMMessageRole.USER, content="Hello")],
+        tools=[tool],
+    )
+
+    result = [chunk async for chunk in provider.generate_stream(request)]
+
+    assert result[0].content == "ok"
+    kwargs = provider._client.chat.call_args.kwargs
+    assert kwargs["tools"] == provider._tools([tool])
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,6 @@ from google.genai import types
 
 from app.exceptions.provider import LLMProviderError, LLMProviderTimeoutError
 from app.providers.llm import LLMProvider
-from app.providers.prompt_builder import build_prompt
 from app.schemas.llm import (
     LLMMessage,
     LLMMessageRole,
@@ -72,16 +71,30 @@ class GeminiProvider(LLMProvider):
     async def generate_stream(
         self, request: LLMRequest
     ) -> AsyncGenerator[LLMStreamChunk, None]:
-        prompt = build_prompt(request.messages)
+        contents, system_instruction = self._contents(request.messages)
+        config = self._config(request.tools, system_instruction)
 
         try:
-            stream = await self._client.aio.models.generate_content_stream(
-                model=request.model or self._default_model, contents=prompt
-            )
+            async with asyncio.timeout(self._timeout):
+                stream = await self._client.aio.models.generate_content_stream(
+                    model=request.model or self._default_model,
+                    contents=contents,
+                    config=config,
+                )
 
             async for chunk in stream:
-                if chunk.text:
-                    yield chunk.text
+                usage = None
+                if chunk.usage_metadata:
+                    usage = LLMUsage(
+                        input_tokens=chunk.usage_metadata.prompt_token_count or 0,
+                        output_tokens=chunk.usage_metadata.candidates_token_count or 0,
+                    )
+
+                content = chunk.text or None
+                if content is not None or usage is not None:
+                    yield LLMStreamChunk(content=content, usage=usage)
+        except asyncio.TimeoutError as ex:
+            raise LLMProviderTimeoutError() from ex
 
         except Exception as ex:
             raise LLMProviderError() from ex
