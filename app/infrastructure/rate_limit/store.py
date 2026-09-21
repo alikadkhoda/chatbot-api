@@ -8,6 +8,10 @@ from app.infrastructure.rate_limit.result import (
 )
 
 
+class RateLimitStoreUnavailableError(Exception):
+    """Raised when the backing rate-limit store cannot serve a request."""
+
+
 class RateLimitStore(ABC):
     @abstractmethod
     async def get_request_minute_count(self, user_id: UUID) -> int | None: ...

@@ -4,13 +4,17 @@ from pathlib import Path
 from uuid import UUID
 
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from app.infrastructure.rate_limit.result import (
     RateLimitResult,
     RequestRateLimitResult,
     UsageReservationResult,
 )
-from app.infrastructure.rate_limit.store import RateLimitStore
+from app.infrastructure.rate_limit.store import (
+    RateLimitStore,
+    RateLimitStoreUnavailableError,
+)
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
 
@@ -60,16 +64,19 @@ class RedisRateLimitStore(RateLimitStore):
 
         daily_key = f"rate_limit:user:{user_id}:day:request:{daily_window}"
 
-        result = await self._redis.eval(
-            INCREMENT_REQUEST_SCRIPT,
-            2,
-            minute_key,
-            daily_key,
-            minute_limit,
-            daily_limit,
-            minute_ttl,
-            daily_ttl,
-        )
+        try:
+            result = await self._redis.eval(
+                INCREMENT_REQUEST_SCRIPT,
+                2,
+                minute_key,
+                daily_key,
+                minute_limit,
+                daily_limit,
+                minute_ttl,
+                daily_ttl,
+            )
+        except RedisError as ex:
+            raise RateLimitStoreUnavailableError() from ex
 
         return RequestRateLimitResult(
             allowed=bool(result[0]),
@@ -175,19 +182,22 @@ class RedisRateLimitStore(RateLimitStore):
         scaled_cost = int(Decimal(str(cost)) * COST_SCALE)
         scaled_limit = int(Decimal(str(cost_limit)) * COST_SCALE)
 
-        result = await self._redis.eval(
-            RESERVE_USAGE_SCRIPT,
-            4,
-            token_key,
-            reserved_token_key,
-            cost_key,
-            reserved_cost_key,
-            token_limit,
-            tokens,
-            scaled_limit,
-            scaled_cost,
-            daily_ttl,
-        )
+        try:
+            result = await self._redis.eval(
+                RESERVE_USAGE_SCRIPT,
+                4,
+                token_key,
+                reserved_token_key,
+                cost_key,
+                reserved_cost_key,
+                token_limit,
+                tokens,
+                scaled_limit,
+                scaled_cost,
+                daily_ttl,
+            )
+        except RedisError as ex:
+            raise RateLimitStoreUnavailableError() from ex
 
         return UsageReservationResult(
             allowed=bool(result[0]),
@@ -232,19 +242,22 @@ class RedisRateLimitStore(RateLimitStore):
         scaled_cost = int(Decimal(str(cost)) * COST_SCALE)
         scaled_reserved_cost = int(Decimal(str(reserved_cost)) * COST_SCALE)
 
-        await self._redis.eval(
-            SETTLE_USAGE_SCRIPT,
-            4,
-            token_key,
-            reserved_token_key,
-            cost_key,
-            reserved_cost_key,
-            tokens,
-            scaled_cost,
-            reserved_tokens,
-            scaled_reserved_cost,
-            daily_ttl,
-        )
+        try:
+            await self._redis.eval(
+                SETTLE_USAGE_SCRIPT,
+                4,
+                token_key,
+                reserved_token_key,
+                cost_key,
+                reserved_cost_key,
+                tokens,
+                scaled_cost,
+                reserved_tokens,
+                scaled_reserved_cost,
+                daily_ttl,
+            )
+        except RedisError as ex:
+            raise RateLimitStoreUnavailableError() from ex
 
     async def release_usage(
         self, user_id: UUID, reserved_tokens: int, reserved_cost: float
@@ -269,15 +282,18 @@ class RedisRateLimitStore(RateLimitStore):
 
         scaled_cost = int(Decimal(str(reserved_cost)) * COST_SCALE)
 
-        await self._redis.eval(
-            RELEASE_USAGE_SCRIPT,
-            2,
-            reserved_token_key,
-            reserved_cost_key,
-            reserved_tokens,
-            scaled_cost,
-            daily_ttl,
-        )
+        try:
+            await self._redis.eval(
+                RELEASE_USAGE_SCRIPT,
+                2,
+                reserved_token_key,
+                reserved_cost_key,
+                reserved_tokens,
+                scaled_cost,
+                daily_ttl,
+            )
+        except RedisError as ex:
+            raise RateLimitStoreUnavailableError() from ex
 
     async def delete_user(self, user_id: UUID) -> None:
         pattern = f"rate_limit:user:{user_id}:*"

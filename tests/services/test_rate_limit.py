@@ -5,6 +5,7 @@ import pytest
 
 from app.exceptions.rate_limit import (
     RateLimitExceededError,
+    RateLimitServiceUnavailableError,
     TokenLimitExceededError,
     UserQuotaExceededError,
 )
@@ -13,7 +14,10 @@ from app.infrastructure.rate_limit.result import (
     UsageReservation,
     UsageReservationResult,
 )
-from app.infrastructure.rate_limit.store import RateLimitStore
+from app.infrastructure.rate_limit.store import (
+    RateLimitStore,
+    RateLimitStoreUnavailableError,
+)
 from app.services.rate_limit import RateLimitService
 
 
@@ -359,3 +363,50 @@ async def test_record_provider_usage_rejects_negative_output_tokens(
         )
 
     service.store.settle_usage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_consume_request_maps_redis_failure_to_service_unavailable(store):
+    store.increment_request.side_effect = RateLimitStoreUnavailableError()
+
+    service = create_service(store=store)
+
+    with pytest.raises(RateLimitServiceUnavailableError):
+        await service.consume_request(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_check_cost_token_limit_maps_redis_failure_to_service_unavailable(store):
+    store.reserve_usage.side_effect = RateLimitStoreUnavailableError()
+
+    service = create_service(store=store)
+
+    with pytest.raises(RateLimitServiceUnavailableError):
+        await service.check_cost_token_limit(
+            uuid4(), input_tokens=100, max_output_tokens=100
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_provider_usage_maps_redis_failure_to_service_unavailable(store):
+    store.settle_usage.side_effect = RateLimitStoreUnavailableError()
+
+    service = create_service(store=store)
+
+    with pytest.raises(RateLimitServiceUnavailableError):
+        await service.record_provider_usage(
+            uuid4(),
+            input_tokens=100,
+            output_tokens=50,
+            reservation=UsageReservation(tokens=200, cost=1.0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_release_usage_maps_redis_failure_to_service_unavailable(store):
+    store.release_usage.side_effect = RateLimitStoreUnavailableError()
+
+    service = create_service(store=store)
+
+    with pytest.raises(RateLimitServiceUnavailableError):
+        await service.release_usage(uuid4(), UsageReservation(tokens=200, cost=1.0))

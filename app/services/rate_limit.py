@@ -2,11 +2,15 @@ from uuid import UUID
 
 from app.exceptions.rate_limit import (
     RateLimitExceededError,
+    RateLimitServiceUnavailableError,
     TokenLimitExceededError,
     UserQuotaExceededError,
 )
 from app.infrastructure.rate_limit.result import UsageReservation
-from app.infrastructure.rate_limit.store import RateLimitStore
+from app.infrastructure.rate_limit.store import (
+    RateLimitStore,
+    RateLimitStoreUnavailableError,
+)
 
 
 class RateLimitService:
@@ -33,11 +37,14 @@ class RateLimitService:
 
     # بررسی تعداد درخواست‌ها در دقیقه و روز
     async def consume_request(self, user_id: UUID) -> None:
-        usage = await self.store.increment_request(
-            user_id=user_id,
-            minute_limit=self.max_requests_per_minute,
-            daily_limit=self.max_requests_per_day,
-        )
+        try:
+            usage = await self.store.increment_request(
+                user_id=user_id,
+                minute_limit=self.max_requests_per_minute,
+                daily_limit=self.max_requests_per_day,
+            )
+        except RateLimitStoreUnavailableError as ex:
+            raise RateLimitServiceUnavailableError() from ex
 
         if (
             usage.allowed is False
@@ -81,13 +88,16 @@ class RateLimitService:
             input_tokens=input_tokens, output_tokens=max_output_tokens
         )
 
-        result = await self.store.reserve_usage(
-            user_id=user_id,
-            tokens=estimated_tokens,
-            cost=estimated_cost,
-            token_limit=self.max_tokens_per_day,
-            cost_limit=self.max_estimated_cost_per_day,
-        )
+        try:
+            result = await self.store.reserve_usage(
+                user_id=user_id,
+                tokens=estimated_tokens,
+                cost=estimated_cost,
+                token_limit=self.max_tokens_per_day,
+                cost_limit=self.max_estimated_cost_per_day,
+            )
+        except RateLimitStoreUnavailableError as ex:
+            raise RateLimitServiceUnavailableError() from ex
 
         if not result.allowed:
             if result.token_current + estimated_tokens > self.max_tokens_per_day:
@@ -123,17 +133,23 @@ class RateLimitService:
             input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-        await self.store.settle_usage(
-            user_id=user_id,
-            tokens=actual_tokens,
-            cost=actual_cost,
-            reserved_tokens=reservation.tokens,
-            reserved_cost=reservation.cost,
-        )
+        try:
+            await self.store.settle_usage(
+                user_id=user_id,
+                tokens=actual_tokens,
+                cost=actual_cost,
+                reserved_tokens=reservation.tokens,
+                reserved_cost=reservation.cost,
+            )
+        except RateLimitStoreUnavailableError as ex:
+            raise RateLimitServiceUnavailableError() from ex
 
     async def release_usage(self, user_id: UUID, reservation: UsageReservation) -> None:
-        await self.store.release_usage(
-            user_id=user_id,
-            reserved_tokens=reservation.tokens,
-            reserved_cost=reservation.cost,
-        )
+        try:
+            await self.store.release_usage(
+                user_id=user_id,
+                reserved_tokens=reservation.tokens,
+                reserved_cost=reservation.cost,
+            )
+        except RateLimitStoreUnavailableError as ex:
+            raise RateLimitServiceUnavailableError() from ex
